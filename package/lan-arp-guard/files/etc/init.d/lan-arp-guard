@@ -6,5 +6,6 @@ USE_PROCD=1
 start_service() { /usr/sbin/lan-arp-guard start; }
 stop_service() { /usr/sbin/lan-arp-guard stop; }
 reload_service() { /usr/sbin/lan-arp-guard reload; }
-status() { /usr/sbin/lan-arp-guard status; }
+status_service() { /usr/sbin/lan-arp-guard status; }
+service_running() { nft list counter bridge lan_arp_guard blocked >/dev/null 2>&1; }
 service_triggers() { procd_add_reload_trigger 'lan-arp-guard'; }

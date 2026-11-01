@@ -88,7 +88,9 @@ CI 在 OpenWrt 24.10.6 rootfs 中测试 ash/jshn/jsonfilter，另用临时 bridg
 伪造请求/回复被丢弃、普通客户端及路由器自身 ARP 放行、日志限速不影响拦截、
 无效事务保留旧规则、重载及关闭日志后的拦截行为。
 报文测试只应在隔离且有 CAP_NET_ADMIN/CAP_NET_RAW 的测试环境执行。
-两次构建校验可复现，产物包含源码提交和 SHA256；发布包不含实际设备名单、校园网账号或诊断日志。
+CI 同一工具链下两次构建校验可复现，产物包含源码提交、Python/zlib 版本和 SHA256。
+不同 Python/zlib 工具链的压缩字节可能不同；正式 Release 使用 CI 产物。
+发布包不含实际设备名单、校园网账号或诊断日志。
 
 也可把 `package/` 下两个目录加入 OpenWrt feeds/构建树，按对应 Makefile 编译。
 

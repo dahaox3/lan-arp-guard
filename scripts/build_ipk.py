@@ -8,7 +8,9 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import sys
 import tarfile
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ('lan-arp-guard', 'luci-app-lan-arp-guard')
@@ -81,7 +83,7 @@ def main():
     paths = [package(name, epoch) for name in PACKAGES]
     sums = ''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in paths)
     (ROOT / 'dist' / 'SHA256SUMS').write_text(sums, encoding='utf-8', newline='\n')
-    (ROOT / 'dist' / 'BUILDINFO.json').write_text(json.dumps({'source_commit': commit, 'source_date_epoch': epoch, 'dirty': dirty, 'architecture': 'all', 'format': 'OpenWrt gzip/tar IPK', 'packages': [p.name for p in paths]}, indent=2) + '\n', encoding='utf-8', newline='\n')
+    (ROOT / 'dist' / 'BUILDINFO.json').write_text(json.dumps({'source_commit': commit, 'source_date_epoch': epoch, 'dirty': dirty, 'architecture': 'all', 'format': 'OpenWrt gzip/tar IPK', 'python': sys.version.split()[0], 'zlib': zlib.ZLIB_RUNTIME_VERSION, 'packages': [p.name for p in paths]}, indent=2) + '\n', encoding='utf-8', newline='\n')
     print(sums, end='')
 
 
