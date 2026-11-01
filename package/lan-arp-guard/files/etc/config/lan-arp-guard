@@ -1,0 +1,5 @@
+config guard 'main'
+	option enabled '1'
+	option interface 'lan'
+	option logging '1'
+	# Empty protected_ip list: protect every current IPv4 address on this bridge.

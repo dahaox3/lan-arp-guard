@@ -1,0 +1,10 @@
+{
+  "luci-app-lan-arp-guard": {
+    "description": "Read gateway protection counters and edit its configuration",
+    "read": {
+      "uci": [ "lan-arp-guard" ],
+      "ubus": { "lan-arp-guard": [ "status", "events" ] }
+    },
+    "write": { "uci": [ "lan-arp-guard" ] }
+  }
+}

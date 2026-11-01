@@ -1,0 +1,8 @@
+#!/bin/sh
+case "$ACTION" in ifup|ifupdate) ;; *) exit 0 ;; esac
+. /lib/functions.sh
+config_load lan-arp-guard
+config_get guard_iface main interface lan
+[ "$INTERFACE" = "$guard_iface" ] || exit 0
+/etc/init.d/lan-arp-guard enabled || exit 0
+/etc/init.d/lan-arp-guard reload

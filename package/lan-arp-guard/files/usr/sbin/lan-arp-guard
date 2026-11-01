@@ -1,0 +1,164 @@
+#!/bin/sh
+# Copyright (c) 2026 dahaox3. SPDX-License-Identifier: MIT
+# No daemon: install bridge-family rules and leave packet handling to the kernel.
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+RUNDIR=/var/run/lan-arp-guard
+LOCK=/var/lock/lan-arp-guard.lock
+
+valid_name() {
+	[ -n "$1" ] && [ "${#1}" -le 32 ] || return 1
+	case "$1" in *[!a-zA-Z0-9_.:-]*) return 1 ;; esac
+}
+
+valid_ipv4() {
+	local ip="$1" part oldifs="$IFS"
+	case "$ip" in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+	IFS=.; set -- $ip; IFS="$oldifs"
+	[ "$#" -eq 4 ] || return 1
+	for part in "$@"; do
+		case "$part" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
+		[ "${#part}" -le 3 ] && [ "$part" -le 255 ] || return 1
+	done
+	# Only usable unicast addresses; loopback/unspecified are never gateways.
+	[ "$1" -gt 0 ] && [ "$1" -lt 224 ] && [ "$1" -ne 127 ]
+}
+
+load_settings() {
+	config_load lan-arp-guard
+	config_get_bool ENABLED main enabled 1
+	config_get IFACE main interface lan
+	config_get_bool LOGGING main logging 1
+	config_get MANUAL main protected_ip ''
+}
+
+resolve_bridge() {
+	local data ip count=0
+	valid_name "$IFACE" || { ERROR=invalid_interface; return 1; }
+	data=$(ubus -S call "network.interface.$IFACE" status 2>/dev/null) || {
+		ERROR=interface_unavailable; return 1;
+	}
+	DEVICE=$(jsonfilter -s "$data" -e '@.device' 2>/dev/null)
+	valid_name "$DEVICE" && [ "${#DEVICE}" -le 15 ] && [ -d "/sys/class/net/$DEVICE/bridge" ] || {
+		ERROR=not_a_bridge; return 1;
+	}
+	IPS=''
+	if [ -n "$MANUAL" ]; then
+		data="$MANUAL"
+	else
+		data=$(jsonfilter -s "$data" -e '@["ipv4-address"][*].address' 2>/dev/null)
+	fi
+	for ip in $data; do
+		valid_ipv4 "$ip" || { ERROR=invalid_ipv4; return 1; }
+		case " $IPS " in *" $ip "*) continue ;; esac
+		count=$((count + 1))
+		[ "$count" -le 32 ] || { ERROR=too_many_addresses; return 1; }
+		IPS="${IPS:+$IPS }$ip"
+	done
+	[ -n "$IPS" ] || { ERROR=no_ipv4; return 1; }
+}
+
+render_rules() {
+	local ip separator=''
+	# add+delete+recreate in ONE transaction also works if the table is absent.
+	# A syntax/apply error leaves the entire previous ruleset untouched.
+	cat <<'EOF'
+add table bridge lan_arp_guard
+delete table bridge lan_arp_guard
+table bridge lan_arp_guard {
+ counter blocked { }
+ set gateways {
+  type ipv4_addr
+EOF
+	printf '  elements = { '
+	for ip in $IPS; do printf '%s%s' "$separator" "$ip"; separator=', '; done
+	printf ' }\n }\n chain ingress {\n'
+	printf '  type filter hook prerouting priority -300; policy accept;\n'
+	if [ "$LOGGING" = 1 ]; then
+		printf '  meta ibrname "%s" ether type arp arp saddr ip @gateways limit rate 2/minute burst 2 packets log prefix "LAN-GW-ARP " flags ether\n' "$DEVICE"
+	fi
+	printf '  meta ibrname "%s" ether type arp arp saddr ip @gateways counter name blocked drop\n' "$DEVICE"
+	printf ' }\n}\n'
+}
+
+record_error() {
+	printf '%s\n' "$1" > "$RUNDIR/error"
+	logger -t lan-arp-guard "Apply failed ($1); existing protection retained."
+}
+
+apply_rules() {
+	local tmp
+	load_settings
+	if [ "$ENABLED" != 1 ]; then remove_rules; return $?; fi
+	resolve_bridge || { record_error "$ERROR"; return 1; }
+	tmp=$(mktemp "$RUNDIR/rules.XXXXXX") || return 1
+	render_rules > "$tmp"
+	if ! nft -c -f "$tmp" 2> "$RUNDIR/nft-error"; then
+		rm -f "$tmp"; record_error validation_failed; return 1
+	fi
+	if ! nft -f "$tmp" 2> "$RUNDIR/nft-error"; then
+		rm -f "$tmp"; record_error apply_failed; return 1
+	fi
+	mv -f "$tmp" "$RUNDIR/applied.nft"
+	rm -f "$RUNDIR/error" "$RUNDIR/nft-error"
+	logger -t lan-arp-guard "Protection applied on $DEVICE; counters reset."
+}
+
+remove_rules() {
+	if nft list table bridge lan_arp_guard >/dev/null 2>&1; then
+		nft delete table bridge lan_arp_guard || { record_error remove_failed; return 1; }
+	fi
+	rm -f "$RUNDIR/applied.nft" "$RUNDIR/error" "$RUNDIR/nft-error"
+}
+
+show_status() {
+	local active=0 packets=0 bytes=0 data device addresses error=''
+	load_settings
+	if data=$(nft -j list table bridge lan_arp_guard 2>/dev/null); then
+		active=1
+		device=$(jsonfilter -s "$data" -e '@.nftables[*].rule.expr[*].match.right' 2>/dev/null | head -n 1)
+		# Counter and set are queried separately to keep JSON paths unambiguous.
+		data=$(nft -j list counter bridge lan_arp_guard blocked 2>/dev/null)
+		packets=$(jsonfilter -s "$data" -e '@.nftables[*].counter.packets' 2>/dev/null)
+		bytes=$(jsonfilter -s "$data" -e '@.nftables[*].counter.bytes' 2>/dev/null)
+		data=$(nft -j list set bridge lan_arp_guard gateways 2>/dev/null)
+		addresses=$(jsonfilter -s "$data" -e '@.nftables[*].set.elem[*]' 2>/dev/null)
+	fi
+	[ ! -s "$RUNDIR/error" ] || read -r error < "$RUNDIR/error"
+	json_init
+	json_add_boolean enabled "$ENABLED"
+	json_add_boolean active "$active"
+	json_add_string interface "$IFACE"
+	json_add_string device "$device"
+	json_add_string error "$error"
+	json_add_string packets "${packets:-0}"
+	json_add_string bytes "${bytes:-0}"
+	json_add_array addresses
+	for data in $addresses; do json_add_string '' "$data"; done
+	json_close_array
+	json_dump
+}
+
+show_events() {
+	json_init
+	json_add_string log "$(logread -e 'LAN-GW-ARP' 2>/dev/null | tail -n 20)"
+	json_dump
+}
+
+# CLI entry point. State-changing commands serialize with hotplug and UCI reload.
+case "${1:-}" in
+	status) show_status ;;
+	events) show_events ;;
+	start|reload|stop|check)
+		umask 077
+		mkdir -p "$RUNDIR" /var/lock || exit 1
+		exec 9>"$LOCK"; flock -x 9 || exit 1
+		case "$1" in
+			stop) remove_rules ;;
+			check) load_settings; resolve_bridge || exit 1; render_rules | nft -c -f - ;;
+			*) apply_rules ;;
+		esac
+		;;
+	*) echo 'Usage: lan-arp-guard {start|reload|stop|check|status|events}' >&2; exit 2 ;;
+esac

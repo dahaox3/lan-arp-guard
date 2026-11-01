@@ -1,0 +1,32 @@
+name: Validate and package
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Syntax, UI and reproducible packages
+        run: |
+          find package/lan-arp-guard/files -type f ! -path '*/etc/config/*' -exec sh -n {} \;
+          node --check package/luci-app-lan-arp-guard/htdocs/luci-static/resources/view/lan-arp-guard.js
+          node tests/test_view.js
+          python3 scripts/build_ipk.py
+          cp dist/SHA256SUMS /tmp/first-sums
+          python3 scripts/build_ipk.py
+          cmp /tmp/first-sums dist/SHA256SUMS
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: OpenWrt ash and real kernel packet tests
+        run: |
+          docker run --rm --privileged -v "$PWD:/src:ro" ghcr.io/openwrt/rootfs:x86-64-24.10.6@sha256:fd76f3afb9c390ef2915618b6e3d7187698c03ecc6c23d3a13f12b62d9c6209e /bin/sh -ec '
+            mkdir -p /var/lock /var/run
+            opkg update
+            opkg install nftables-json ip-full python3 jsonfilter jshn flock
+            sh /src/tests/test_guard.sh
+            python3 /src/tests/test_packets.py
+          '
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: lan-arp-guard
+          path: dist/*

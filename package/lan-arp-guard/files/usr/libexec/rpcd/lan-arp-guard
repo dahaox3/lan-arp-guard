@@ -1,0 +1,11 @@
+#!/bin/sh
+case "$1" in
+	list) echo '{"status":{},"events":{}}' ;;
+	call)
+		case "$2" in
+			status|events) exec /usr/sbin/lan-arp-guard "$2" ;;
+			*) echo '{}'; exit 1 ;;
+		esac
+		;;
+	*) exit 1 ;;
+esac
